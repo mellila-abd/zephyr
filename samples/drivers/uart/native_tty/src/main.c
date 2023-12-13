@@ -7,8 +7,8 @@
  */
 
 #include <zephyr/kernel.h>
-#include <zephyr/device.h>
 #include <zephyr/drivers/uart.h>
+#include <zephyr/device.h>
 
 #include <stdio.h>
 #include <string.h>
