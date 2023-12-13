@@ -45,8 +45,6 @@ static const struct bt_audio_codec_cap codec_cap = BT_AUDIO_CODEC_CAP_LC3(
 static K_SEM_DEFINE(sem_started, 0U, ARRAY_SIZE(streams));
 static K_SEM_DEFINE(sem_stopped, 0U, ARRAY_SIZE(streams));
 
-static uint8_t metadata[CONFIG_BT_AUDIO_CODEC_CFG_MAX_METADATA_SIZE];
-
 /* Create a mask for the maximum BIS we can sync to using the number of streams
  * we have. We add an additional 1 since the bis indexes start from 1 and not
  * 0.
@@ -54,35 +52,50 @@ static uint8_t metadata[CONFIG_BT_AUDIO_CODEC_CFG_MAX_METADATA_SIZE];
 static const uint32_t bis_index_mask = BIT_MASK(ARRAY_SIZE(streams) + 1U);
 static uint32_t bis_index_bitfield;
 
-static void base_recv_cb(struct bt_bap_broadcast_sink *sink, const struct bt_bap_base *base)
+static bool base_subgroup_cb(const struct bt_bap_base_subgroup *subgroup, void *user_data)
+{
+	static uint8_t metadata[CONFIG_BT_AUDIO_CODEC_CFG_MAX_METADATA_SIZE];
+	static size_t metadata_size;
+	uint8_t *meta;
+	int ret;
+
+	ret = bt_bap_base_get_subgroup_codec_meta(subgroup, &meta);
+	if (ret < 0) {
+		FAIL("Could not get subgroup meta: %d\n", ret);
+		return false;
+	}
+
+	if (TEST_FLAG(flag_base_received) &&
+	    ((size_t)ret != metadata_size || memcmp(meta, metadata, metadata_size) != 0)) {
+		printk("Metadata updated\n");
+		SET_FLAG(flag_base_metadata_updated);
+	}
+
+	metadata_size = (size_t)ret;
+	(void)memcpy(metadata, meta, metadata_size);
+
+	return true;
+}
+
+static void base_recv_cb(struct bt_bap_broadcast_sink *sink, const struct bt_bap_base *base,
+			 size_t base_size)
 {
 	uint32_t base_bis_index_bitfield = 0U;
+	int ret;
 
-	if (TEST_FLAG(flag_base_received)) {
+	printk("Received BASE with %d subgroups from broadcast sink %p\n",
+	       bt_bap_base_get_subgroup_count(base), sink);
 
-		if (base->subgroup_count > 0 &&
-		    memcmp(metadata, base->subgroups[0].codec_cfg.meta,
-			   sizeof(base->subgroups[0].codec_cfg.meta)) != 0) {
-
-			(void)memcpy(metadata, base->subgroups[0].codec_cfg.meta,
-				     sizeof(base->subgroups[0].codec_cfg.meta));
-
-			SET_FLAG(flag_base_metadata_updated);
-		}
-
+	ret = bt_bap_base_foreach_subgroup(base, base_subgroup_cb, NULL);
+	if (ret != 0) {
+		FAIL("Failed to parse subgroups: %d\n", ret);
 		return;
 	}
 
-	printk("Received BASE with %u subgroups from broadcast sink %p\n",
-	       base->subgroup_count, sink);
-
-
-	for (size_t i = 0U; i < base->subgroup_count; i++) {
-		for (size_t j = 0U; j < base->subgroups[i].bis_count; j++) {
-			const uint8_t index = base->subgroups[i].bis_data[j].index;
-
-			base_bis_index_bitfield |= BIT(index);
-		}
+	ret = bt_bap_base_get_bis_indexes(base, &base_bis_index_bitfield);
+	if (ret != 0) {
+		FAIL("Failed to BIS indexes: %d\n", ret);
+		return;
 	}
 
 	bis_index_bitfield = base_bis_index_bitfield & bis_index_mask;
@@ -263,7 +276,10 @@ static void recv_cb(struct bt_bap_stream *stream,
 {
 	struct bap_test_stream *test_stream = CONTAINER_OF(stream, struct bap_test_stream, stream);
 
-	printk("Incoming audio on stream %p len %u and ts %u\n", stream, buf->len, info->ts);
+	if ((test_stream->rx_cnt % 100U) == 0U) {
+		printk("Incoming audio on stream %p len %u and ts %u\n", stream, buf->len,
+		       info->ts);
+	}
 
 	if (test_stream->rx_cnt > 0U && info->ts == test_stream->last_info.ts) {
 		FAIL("Duplicated timestamp received: %u\n", test_stream->last_info.ts);
@@ -276,7 +292,11 @@ static void recv_cb(struct bt_bap_stream *stream,
 	}
 
 	if (info->flags & BT_ISO_FLAGS_ERROR) {
-		FAIL("ISO receive error\n");
+		/* Fail the test if we have not received what we expected */
+		if (!TEST_FLAG(flag_received)) {
+			FAIL("ISO receive error\n");
+		}
+
 		return;
 	}
 
@@ -654,15 +674,20 @@ static void test_common(void)
 
 	printk("Waiting for data\n");
 	WAIT_FOR_FLAG(flag_received);
+	backchannel_sync_send_all(); /* let other devices know we have received what we wanted */
 
 	/* Ensure that we also see the metadata update */
 	printk("Waiting for metadata update\n");
 	WAIT_FOR_FLAG(flag_base_metadata_updated)
+
+	backchannel_sync_send_all(); /* let other devices know we have received what we wanted */
 }
 
 static void test_main(void)
 {
 	test_common();
+
+	backchannel_sync_send_all(); /* let the broadcast source know it can stop */
 
 	/* The order of PA sync lost and BIG Sync lost is irrelevant
 	 * and depend on timeout parameters. We just wait for PA first, but
@@ -692,6 +717,8 @@ static void test_sink_disconnect(void)
 
 	test_broadcast_delete_inval();
 	test_broadcast_delete();
+
+	backchannel_sync_send_all(); /* let the broadcast source know it can stop */
 
 	PASS("Broadcast sink disconnect passed\n");
 }
@@ -728,6 +755,12 @@ static void broadcast_sink_with_assistant(void)
 
 	printk("Waiting for data\n");
 	WAIT_FOR_FLAG(flag_received);
+	backchannel_sync_send_all(); /* let other devices know we have received what we wanted */
+
+	/* Ensure that we also see the metadata update */
+	printk("Waiting for metadata update\n");
+	WAIT_FOR_FLAG(flag_base_metadata_updated)
+	backchannel_sync_send_all(); /* let other devices know we have received what we wanted */
 
 	printk("Waiting for BIG sync terminate request\n");
 	WAIT_FOR_UNSET_FLAG(flag_bis_sync_requested);
@@ -737,6 +770,8 @@ static void broadcast_sink_with_assistant(void)
 	WAIT_FOR_UNSET_FLAG(flag_pa_request);
 	test_pa_sync_delete();
 	test_broadcast_delete();
+
+	backchannel_sync_send_all(); /* let the broadcast source know it can stop */
 
 	PASS("Broadcast sink with assistant passed\n");
 }

@@ -250,20 +250,20 @@ TESTDATA_1_1 = [
 ]
 TESTDATA_1_2 = [
     (0, False, 'dummy out',
-     True, True, True, True, 'passed', None, False, True),
+     True, True, 'passed', None, False, True),
     (0, True, '',
-     False, False, False, False, 'passed', None, False, False),
+     False, False, 'passed', None, False, False),
     (1, True, 'ERROR: region `FLASH\' overflowed by 123 MB',
-     False, True, True, True, 'skipped', 'FLASH overflow', True, False),
+     True,  True, 'skipped', 'FLASH overflow', True, False),
     (1, True, 'Error: Image size (99 B) + trailer (1 B) exceeds requested size',
-     False, True, True, True, 'skipped', 'imgtool overflow', True, False),
+     True, True, 'skipped', 'imgtool overflow', True, False),
     (1, True, 'mock.ANY',
-     False, True, True, True, 'error', 'Build failure', False, False)
+     True, True, 'error', 'Build failure', False, False)
 ]
 
 @pytest.mark.parametrize(
-    'return_code, is_instance_run, p_out, expect_msg, expect_returncode,' \
-    ' expect_instance, expect_writes, expected_status, expected_reason,' \
+    'return_code, is_instance_run, p_out, expect_returncode,' \
+    ' expect_writes, expected_status, expected_reason,' \
     ' expected_change_skip, expected_add_missing',
     TESTDATA_1_2,
     ids=['no error, no instance run', 'no error, instance run',
@@ -275,9 +275,7 @@ def test_cmake_run_build(
     return_code,
     is_instance_run,
     p_out,
-    expect_msg,
     expect_returncode,
-    expect_instance,
     expect_writes,
     expected_status,
     expected_reason,
@@ -303,6 +301,7 @@ def test_cmake_run_build(
         popen=mock.Mock(side_effect=mock_popen)
     )
     instance_mock = mock.Mock(add_missing_case_status=mock.Mock())
+    instance_mock.build_time = 0
     instance_mock.run = is_instance_run
     instance_mock.status = None
     instance_mock.reason = None
@@ -328,14 +327,8 @@ def test_cmake_run_build(
         result = cmake.run_build(args=['arg1', 'arg2'])
 
     expected_results = {}
-    if expect_msg:
-        expected_results['msg'] = 'Finished building %s for %s' % \
-                                   (os.path.join('source', 'dir'), \
-                                    '<platform name>')
     if expect_returncode:
         expected_results['returncode'] = return_code
-    if expect_instance:
-        expected_results['instance'] = instance_mock
     if expected_results == {}:
         expected_results = None
 
@@ -369,7 +362,7 @@ TESTDATA_2_1 = [
 TESTDATA_2_2 = [
     (True, ['dummy_stage_1', 'ds2'],
      0, False, '',
-     True, False, True, False,
+     True, True, False,
      None, None,
      [os.path.join('dummy', 'cmake'),
       '-B' + os.path.join('build', 'dir'), '-DTC_RUNID=1',
@@ -383,7 +376,7 @@ TESTDATA_2_2 = [
       '-Pzephyr_base/cmake/package_helper.cmake']),
     (False, [],
      1, True, 'ERROR: region `FLASH\' overflowed by 123 MB',
-     False, True, False, True,
+     True, False, True,
      'error', 'Cmake build failure',
      [os.path.join('dummy', 'cmake'),
       '-B' + os.path.join('build', 'dir'), '-DTC_RUNID=1',
@@ -398,7 +391,7 @@ TESTDATA_2_2 = [
 
 @pytest.mark.parametrize(
     'error_warns, f_stages,' \
-    ' return_code, is_instance_run, p_out, expect_msg, expect_returncode,' \
+    ' return_code, is_instance_run, p_out, expect_returncode,' \
     ' expect_filter, expect_writes, expected_status, expected_reason,' \
     ' expected_cmd',
     TESTDATA_2_2,
@@ -412,7 +405,6 @@ def test_cmake_run_cmake(
     return_code,
     is_instance_run,
     p_out,
-    expect_msg,
     expect_returncode,
     expect_filter,
     expect_writes,
@@ -442,6 +434,7 @@ def test_cmake_run_cmake(
     instance_mock = mock.Mock(add_missing_case_status=mock.Mock())
     instance_mock.run = is_instance_run
     instance_mock.run_id = 1
+    instance_mock.build_time = 0
     instance_mock.status = None
     instance_mock.reason = None
     instance_mock.testsuite = mock.Mock()
@@ -476,10 +469,6 @@ def test_cmake_run_cmake(
         result = cmake.run_cmake(args=['arg1', 'arg2'], filter_stages=f_stages)
 
     expected_results = {}
-    if expect_msg:
-        expected_results['msg'] = 'Finished building %s for %s' % \
-                                   (os.path.join('source', 'dir'), \
-                                    '<platform name>')
     if expect_returncode:
         expected_results['returncode'] = return_code
     if expect_filter:
@@ -785,6 +774,7 @@ TESTDATA_4 = [
 )
 def test_projectbuilder_log_info(
     caplog,
+    mocked_jobserver,
     inline_logs,
     read_exception,
     expected_logs
@@ -802,10 +792,14 @@ def test_projectbuilder_log_info(
 
     filename = 'dummy_file.log'
 
+    env_mock = mock.Mock()
+    instance_mock = mock.Mock()
+
+    pb = ProjectBuilder(instance_mock, env_mock, mocked_jobserver)
     with mock.patch('builtins.open', mock_open), \
          mock.patch('os.path.realpath', mock_realpath), \
          mock.patch('os.path.abspath', mock_abspath):
-        ProjectBuilder.log_info(filename, inline_logs)
+        pb.log_info(filename, inline_logs)
 
     assert all([log in caplog.text for log in expected_logs])
 
@@ -1876,14 +1870,14 @@ def test_projectbuilder_sanitize_zephyr_base_from_files(
 TESTDATA_13 = [
     (
         'error', True, True, False,
-        ['INFO     twister:runner.py:950 20/25 dummy platform' \
+        ['INFO      20/25 dummy platform' \
          '            dummy.testsuite.name' \
          '                                ERROR dummy reason (cmake)'],
         None
     ),
     (
         'failed', False, False, False,
-        ['ERROR    twister:runner.py:904 dummy platform' \
+        ['ERROR     dummy platform' \
          '            dummy.testsuite.name' \
          '                                FAILED : dummy reason'],
         'INFO    - Total complete:   20/  25  80%  skipped:    3,' \
@@ -1891,7 +1885,7 @@ TESTDATA_13 = [
     ),
     (
         'skipped', True, False, False,
-        ['INFO     twister:runner.py:950 20/25 dummy platform' \
+        ['INFO      20/25 dummy platform' \
          '            dummy.testsuite.name' \
          '                               SKIPPED (dummy reason)'],
         None
@@ -1904,7 +1898,7 @@ TESTDATA_13 = [
     ),
     (
         'passed', True, False, True,
-        ['INFO     twister:runner.py:950 20/25 dummy platform' \
+        ['INFO      20/25 dummy platform' \
          '            dummy.testsuite.name' \
          '                               PASSED' \
          ' (dummy handler type: dummy dut, 60.000s)'],
@@ -1912,7 +1906,7 @@ TESTDATA_13 = [
     ),
     (
         'passed', True, False, False,
-        ['INFO     twister:runner.py:950 20/25 dummy platform' \
+        ['INFO      20/25 dummy platform' \
          '            dummy.testsuite.name' \
          '                               PASSED (build)'],
         None
@@ -1925,7 +1919,7 @@ TESTDATA_13 = [
     ),
     (
         'timeout', True, False, True,
-        ['INFO     twister:runner.py:950 20/25 dummy platform' \
+        ['INFO      20/25 dummy platform' \
          '            dummy.testsuite.name' \
          '                               UNKNOWN' \
          ' (dummy handler type: dummy dut, 60.000s/seed: 123)'],
@@ -1988,11 +1982,13 @@ def test_projectbuilder_report_out(
 
     assert results_mock.cases == 25
 
-    assert all([log in re.sub(
+    trim_actual_log = re.sub(
         r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])',
         '',
         caplog.text
-    ) for log in expected_logs])
+    )
+    trim_actual_log = re.sub(r'twister:runner.py:\d+', '', trim_actual_log)
+    assert all([log in trim_actual_log for log in expected_logs])
 
     if expected_out:
         out, err = capfd.readouterr()
@@ -2093,7 +2089,7 @@ TESTDATA_14 = [
         True,
         'device',
         234,
-        'native_posix',
+        'native_sim',
         'posix',
         {'CONFIG_FAKE_ENTROPY_NATIVE_POSIX': 'y'},
         'pytest',
@@ -2108,7 +2104,7 @@ TESTDATA_14 = [
         True,
         'not device',
         None,
-        'native_posix',
+        'native_sim',
         'not posix',
         {'CONFIG_FAKE_ENTROPY_NATIVE_POSIX': 'y'},
         'not pytest',
@@ -2123,7 +2119,7 @@ TESTDATA_14 = [
         False,
         'device',
         234,
-        'native_posix',
+        'native_sim',
         'posix',
         {'CONFIG_FAKE_ENTROPY_NATIVE_POSIX': 'y'},
         'pytest',
@@ -2235,6 +2231,7 @@ def test_projectbuilder_gather_metrics(
 
     pb = ProjectBuilder(instance_mock, env_mock, mocked_jobserver)
     pb.options.enable_size_report = enable_size_report
+    pb.options.create_rom_ram_report = False
     pb.options.cmake_only = cmake_only
     pb.calc_size = mock.Mock()
 
@@ -2532,11 +2529,11 @@ def test_twisterrunner_add_tasks_to_queue(
         return [filter]
 
     instances = {
-        'dummy1': mock.Mock(run=True, retries=0, status='passed'),
-        'dummy2': mock.Mock(run=True, retries=0, status='skipped'),
-        'dummy3': mock.Mock(run=True, retries=0, status='filtered'),
-        'dummy4': mock.Mock(run=True, retries=0, status='error'),
-        'dummy5': mock.Mock(run=True, retries=0, status='failed')
+        'dummy1': mock.Mock(run=True, retries=0, status='passed', build_dir="/tmp"),
+        'dummy2': mock.Mock(run=True, retries=0, status='skipped', build_dir="/tmp"),
+        'dummy3': mock.Mock(run=True, retries=0, status='filtered', build_dir="/tmp"),
+        'dummy4': mock.Mock(run=True, retries=0, status='error', build_dir="/tmp"),
+        'dummy5': mock.Mock(run=True, retries=0, status='failed', build_dir="/tmp")
     }
     instances['dummy4'].testsuite.filter = 'some'
     instances['dummy5'].testsuite.filter = 'full'
@@ -2642,11 +2639,6 @@ def test_twisterrunner_execute(caplog):
     with mock.patch('twisterlib.runner.Process', process_mock):
         tr.execute(pipeline_mock, done_mock)
 
-    assert 'Launch process 0' in caplog.text
-    assert 'Launch process 1' in caplog.text
-    assert 'Launch process 2' in caplog.text
-    assert 'Launch process 3' in caplog.text
-    assert 'Launch process 4' in caplog.text
     assert 'Execution interrupted' in caplog.text
 
     assert len(process_mock().start.call_args_list) == 5

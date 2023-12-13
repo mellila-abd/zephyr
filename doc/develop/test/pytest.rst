@@ -56,6 +56,18 @@ Pytest scans the given locations looking for tests, following its default
 `discovery rules <https://docs.pytest.org/en/7.1.x/explanation/goodpractices.html#conventions-for-python-test-discovery>`_
 One can also pass some extra arguments to the pytest from yaml file using ``pytest_args`` keyword
 under ``harness_config``, e.g.: ``pytest_args: [‘-k=test_method’, ‘--log-level=DEBUG’]``.
+There is also an option to pass ``--pytest-args`` through Twister command line parameters.
+This can be particularly useful when one wants to select a specific testcase from a test suite.
+For instance, one can use a command:
+
+.. code-block:: console
+
+   $ ./scripts/twister --platform native_sim -T samples/subsys/testsuite/pytest/shell \
+   -s samples/subsys/testsuite/pytest/shell/sample.pytest.shell \
+   --pytest-args='-k test_shell_print_version'
+
+
+Note that ``--pytest-args`` can be passed multiple times to pass several arguments to the pytest.
 
 Helpers & fixtures
 ==================
@@ -67,7 +79,7 @@ Give access to a DeviceAdapter type object, that represents Device Under Test.
 This fixture is the core of pytest harness plugin. It is required to launch
 DUT (initialize logging, flash device, connect serial etc).
 This fixture yields a device prepared according to the requested type
-(native posix, qemu, hardware, etc.). All types of devices share the same API.
+(``native``, ``qemu``, ``hardware``, etc.). All types of devices share the same API.
 This allows for writing tests which are device-type-agnostic.
 Scope of this fixture is determined by the ``pytest_dut_scope``
 keyword placed under ``harness_config`` section.

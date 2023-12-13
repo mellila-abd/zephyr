@@ -81,6 +81,8 @@ static uint32_t requested_bis_sync;
 static uint32_t bis_index_bitfield;
 static uint8_t sink_broadcast_code[BT_AUDIO_BROADCAST_CODE_SIZE];
 
+uint64_t total_rx_iso_packet_count; /* This value is exposed to test code */
+
 #if defined(CONFIG_LIBLC3)
 
 #include "lc3.h"
@@ -182,6 +184,7 @@ static void stream_started_cb(struct bt_bap_stream *stream)
 
 	printk("Stream %p started\n", stream);
 
+	total_rx_iso_packet_count = 0U;
 	sink_stream->recv_cnt = 0U;
 	sink_stream->loss_cnt = 0U;
 	sink_stream->valid_cnt = 0U;
@@ -234,6 +237,7 @@ static void stream_recv_cb(struct bt_bap_stream *stream, const struct bt_iso_rec
 #endif /* defined(CONFIG_LIBLC3) */
 	}
 
+	total_rx_iso_packet_count++;
 	sink_stream->recv_cnt++;
 	if ((sink_stream->recv_cnt % 1000U) == 0U) {
 		printk("Stream %p: received %u total ISO packets: Valid %u | Error %u | Loss %u\n",
@@ -248,44 +252,71 @@ static struct bt_bap_stream_ops stream_ops = {
 	.recv = stream_recv_cb,
 };
 
-static void base_recv_cb(struct bt_bap_broadcast_sink *sink, const struct bt_bap_base *base)
+#if defined(CONFIG_LIBLC3)
+static bool base_subgroup_cb(const struct bt_bap_base_subgroup *subgroup, void *user_data)
+{
+	struct bt_audio_codec_cfg *codec_cfg = user_data;
+	struct bt_bap_base_codec_id codec_id;
+	int ret;
+
+	ret = bt_bap_base_get_subgroup_codec_id(subgroup, &codec_id);
+	if (ret < 0) {
+		printk("Could not get codec id for subgroup %p: %d", subgroup, ret);
+		return true;
+	}
+
+	if (codec_id.id != BT_HCI_CODING_FORMAT_LC3) {
+		printk("Unsupported codec for subgroup %p: 0x%02x", subgroup, codec_id.id);
+		return true; /* parse next subgroup */
+	}
+
+	ret = bt_bap_base_subgroup_codec_to_codec_cfg(subgroup, codec_cfg);
+	if (ret < 0) {
+		printk("Could convert subgroup %p to codec_cfg: %d", subgroup, ret);
+		return true;
+	}
+
+	return false; /* We only care about the first subgroup with LC3 */
+}
+#endif /* CONFIG_LIBLC3 */
+
+static void base_recv_cb(struct bt_bap_broadcast_sink *sink, const struct bt_bap_base *base,
+			 size_t base_size)
 {
 	uint32_t base_bis_index_bitfield = 0U;
+	int err;
 
 	if (k_sem_count_get(&sem_base_received) != 0U) {
 		return;
 	}
 
-	printk("Received BASE with %u subgroups from broadcast sink %p\n",
-	       base->subgroup_count, sink);
+	printk("Received BASE with %d subgroups from broadcast sink %p\n",
+	       bt_bap_base_get_subgroup_count(base), sink);
 
-	for (size_t i = 0U; i < base->subgroup_count; i++) {
-		const size_t bis_count = base->subgroups[i].bis_count;
-
-		printk("Subgroup[%zu] has %zu streams\n", i, bis_count);
-
-		for (size_t j = 0U; j < bis_count; j++) {
-			const uint8_t index = base->subgroups[i].bis_data[j].index;
-
-			printk("\tIndex 0x%02x\n", index);
-
-			base_bis_index_bitfield |= BIT(index);
-		}
 #if defined(CONFIG_LIBLC3)
-		int ret;
-		const struct bt_audio_codec_cfg *codec_cfg = &base->subgroups[i].codec_cfg;
+	struct bt_audio_codec_cfg codec_cfg = {0};
 
-		if (codec_cfg->id != BT_HCI_CODING_FORMAT_LC3) {
-			printk("unsupported codec 0x%02x", codec_cfg->id);
-			return;
-		}
+	err = bt_bap_base_foreach_subgroup(base, base_subgroup_cb, &codec_cfg);
+	if (err != 0 && err != -ECANCELED) {
+		printk("Failed to parse subgroups: %d\n", err);
+		return;
+	} else if (codec_cfg.id != BT_HCI_CODING_FORMAT_LC3) {
+		/* No subgroups with LC3 was found */
+		printk("Did not parse an LC3 codec\n");
+		return;
+	}
 
-		ret = lc3_enable(codec_cfg);
-		if (ret < 0) {
-			printk("Error: cannot enable LC3 codec: %d", ret);
-			return;
-		}
-#endif /* defined(CONFIG_LIBLC3) */
+	err = lc3_enable(&codec_cfg);
+	if (err < 0) {
+		printk("Error: cannot enable LC3 codec: %d", err);
+		return;
+	}
+#endif /* CONFIG_LIBLC3 */
+
+	err = bt_bap_base_get_bis_indexes(base, &base_bis_index_bitfield);
+	if (err != 0) {
+		printk("Failed to BIS indexes: %d\n", err);
+		return;
 	}
 
 	bis_index_bitfield = base_bis_index_bitfield & bis_index_mask;
@@ -587,14 +618,12 @@ static bool is_substring(const char *substr, const char *str)
 	}
 
 	for (size_t pos = 0; pos < str_len; pos++) {
-		if (tolower(substr[pos]) == tolower(str[pos])) {
-			if (pos + sub_str_len > str_len) {
-				return false;
-			}
+		if (pos + sub_str_len > str_len) {
+			return false;
+		}
 
-			if (strncasecmp(substr, &str[pos], sub_str_len) == 0) {
-				return true;
-			}
+		if (strncasecmp(substr, &str[pos], sub_str_len) == 0) {
+			return true;
 		}
 	}
 

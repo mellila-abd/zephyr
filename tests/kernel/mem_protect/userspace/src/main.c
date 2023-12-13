@@ -16,9 +16,14 @@
 #include <zephyr/sys/util.h>
 #include <zephyr/sys/barrier.h>
 #include <zephyr/debug/stack.h>
-#include <zephyr/syscall_handler.h>
+#include <zephyr/internal/syscall_handler.h>
 #include "test_syscall.h"
 #include <zephyr/sys/libc-hooks.h> /* for z_libc_partition */
+
+#if defined(CONFIG_XTENSA)
+#include <zephyr/arch/xtensa/cache.h>
+#include <zephyr/arch/xtensa/xtensa_mmu.h>
+#endif
 
 #if defined(CONFIG_ARC)
 #include <zephyr/arch/arc/v2/mpu/arc_core_mpu.h>
@@ -178,6 +183,12 @@ ZTEST_USER(userspace, test_write_control)
 	set_fault(K_ERR_CPU_EXCEPTION);
 
 	__asm__ volatile("csrr %0, mstatus" : "=r" (status));
+#elif defined(CONFIG_XTENSA)
+	unsigned int ps;
+
+	set_fault(K_ERR_CPU_EXCEPTION);
+
+	__asm__ volatile("rsr.ps %0" : "=r" (ps));
 #else
 #error "Not implemented for this architecture"
 	zassert_unreachable("Write to control register did not fault");
@@ -245,6 +256,24 @@ ZTEST_USER(userspace, test_disable_mmu_mpu)
 	 */
 	csr_write(pmpaddr3, LLONG_MAX);
 	csr_write(pmpcfg0, (PMP_R|PMP_W|PMP_X|PMP_NAPOT) << 24);
+#elif defined(CONFIG_XTENSA)
+	set_fault(K_ERR_CPU_EXCEPTION);
+
+	/* Reset way 6 to do identity mapping.
+	 * Complier would complain addr going out of range if we
+	 * simply do addr = i * 0x20000000 inside the loop. So
+	 * we do increment instead.
+	 */
+	uint32_t addr = 0U;
+
+	for (int i = 0; i < 8; i++) {
+		uint32_t attr = addr | XTENSA_MMU_PERM_WX;
+
+		__asm__ volatile("wdtlb %0, %1; witlb %0, %1"
+				 :: "r"(attr), "r"(addr));
+
+		addr += 0x20000000;
+	}
 #else
 #error "Not implemented for this architecture"
 #endif
@@ -381,7 +410,8 @@ ZTEST_USER(userspace, test_read_priv_stack)
 
 	s[0] = 0;
 	priv_stack_ptr = (char *)&s[0] - size;
-#elif defined(CONFIG_ARM) || defined(CONFIG_X86) || defined(CONFIG_RISCV) || defined(CONFIG_ARM64)
+#elif defined(CONFIG_ARM) || defined(CONFIG_X86) || defined(CONFIG_RISCV) || \
+	defined(CONFIG_ARM64) || defined(CONFIG_XTENSA)
 	/* priv_stack_ptr set by test_main() */
 #else
 #error "Not implemented for this architecture"
@@ -405,7 +435,8 @@ ZTEST_USER(userspace, test_write_priv_stack)
 
 	s[0] = 0;
 	priv_stack_ptr = (char *)&s[0] - size;
-#elif defined(CONFIG_ARM) || defined(CONFIG_X86) || defined(CONFIG_RISCV) || defined(CONFIG_ARM64)
+#elif defined(CONFIG_ARM) || defined(CONFIG_X86) || defined(CONFIG_RISCV) || \
+	defined(CONFIG_ARM64) || defined(CONFIG_XTENSA)
 	/* priv_stack_ptr set by test_main() */
 #else
 #error "Not implemented for this architecture"
@@ -861,28 +892,28 @@ static struct k_sem recycle_sem;
  * @details Test recycle valid/invalid kernel object, see if
  * perms_count changes as expected.
  *
- * @see z_object_recycle(), z_object_find()
+ * @see k_object_recycle(), k_object_find()
  *
  * @ingroup kernel_memprotect_tests
  */
 ZTEST(userspace, test_object_recycle)
 {
-	struct z_object *ko;
+	struct k_object *ko;
 	int perms_count = 0;
 	int dummy = 0;
 
 	/* Validate recycle invalid objects, after recycling this invalid
 	 * object, perms_count should finally still be 1.
 	 */
-	ko = z_object_find(&dummy);
+	ko = k_object_find(&dummy);
 	zassert_true(ko == NULL, "not an invalid object");
 
-	z_object_recycle(&dummy);
+	k_object_recycle(&dummy);
 
-	ko = z_object_find(&recycle_sem);
+	ko = k_object_find(&recycle_sem);
 	(void)memset(ko->perms, 0xFF, sizeof(ko->perms));
 
-	z_object_recycle(&recycle_sem);
+	k_object_recycle(&recycle_sem);
 	zassert_true(ko != NULL, "kernel object not found");
 	zassert_true(ko->flags & K_OBJ_FLAG_INITIALIZED,
 		     "object wasn't marked as initialized");

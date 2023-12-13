@@ -33,7 +33,6 @@
 			mpu: mpu@e000ed90 {
 				compatible = "arm,armv7m-mpu";
 				reg = <0xe000ed90 0x40>;
-				arm,num-mpu-regions = <8>;
 			};
 		};
 	};
@@ -178,6 +177,7 @@
 		mdio: mdio@40034000 {
 			compatible = "atmel,sam-mdio";
 			reg = <0x40034000 0x4000>;
+			clocks = <&pmc PMC_TYPE_PERIPHERAL 44>;
 			status = "disabled";
 			#address-cells = <1>;
 			#size-cells = <0>;

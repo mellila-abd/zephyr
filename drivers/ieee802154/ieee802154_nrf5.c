@@ -57,13 +57,13 @@ struct nrf5_802154_config {
 };
 
 static struct nrf5_802154_data nrf5_data;
-
-#define ACK_REQUEST_BYTE 1
-#define ACK_REQUEST_BIT (1 << 5)
-#define FRAME_PENDING_BYTE 1
-#define FRAME_PENDING_BIT (1 << 4)
+#if defined(CONFIG_IEEE802154_RAW_MODE)
+static const struct device *nrf5_dev;
+#endif
 
 #define DRX_SLOT_RX 0 /* Delayed reception window ID */
+
+#define NSEC_PER_TEN_SYMBOLS (10 * IEEE802154_PHY_OQPSK_780_TO_2450MHZ_SYMBOL_PERIOD_NS)
 
 #if defined(CONFIG_IEEE802154_NRF5_UICR_EUI64_ENABLE)
 #if defined(CONFIG_SOC_NRF5340_CPUAPP)
@@ -97,6 +97,15 @@ static struct nrf5_802154_data nrf5_data;
 #else
 #define IEEE802154_NRF5_VENDOR_OUI (uint32_t)0xF4CE36
 #endif
+
+static inline const struct device *nrf5_get_device(void)
+{
+#if defined(CONFIG_IEEE802154_RAW_MODE)
+	return nrf5_dev;
+#else
+	return net_if_get_device(nrf5_data.iface);
+#endif
+}
 
 static void nrf5_get_eui64(uint8_t *mac)
 {
@@ -179,6 +188,10 @@ static void nrf5_rx_thread(void *arg1, void *arg2, void *arg3)
 
 #if defined(CONFIG_NET_PKT_TIMESTAMP)
 		net_pkt_set_timestamp_ns(pkt, rx_frame->time * NSEC_PER_USEC);
+#endif
+
+#if defined(CONFIG_NET_L2_OPENTHREAD)
+		net_pkt_set_ieee802154_ack_seb(pkt, rx_frame->ack_seb);
 #endif
 
 		LOG_DBG("Caught a packet (%u) (LQI: %u)",
@@ -667,6 +680,7 @@ static int nrf5_stop(const struct device *dev)
 		} else {
 			LOG_WRN("Transition to radio sleep cannot be handled.");
 		}
+		Z_SPIN_DELAY(1);
 		return 0;
 	}
 #else
@@ -724,6 +738,9 @@ static int nrf5_init(const struct device *dev)
 {
 	const struct nrf5_802154_config *nrf5_radio_cfg = NRF5_802154_CFG(dev);
 	struct nrf5_802154_data *nrf5_radio = NRF5_802154_DATA(dev);
+#if defined(CONFIG_IEEE802154_RAW_MODE)
+	nrf5_dev = dev;
+#endif
 
 	k_fifo_init(&nrf5_radio->rx_fifo);
 	k_sem_init(&nrf5_radio->tx_wait, 0, 1);
@@ -764,25 +781,17 @@ static void nrf5_iface_init(struct net_if *iface)
 #if defined(CONFIG_NRF_802154_ENCRYPTION)
 static void nrf5_config_mac_keys(struct ieee802154_key *mac_keys)
 {
-	static nrf_802154_key_id_t stored_key_ids[NRF_802154_SECURITY_KEY_STORAGE_SIZE];
-	static uint8_t stored_ids[NRF_802154_SECURITY_KEY_STORAGE_SIZE];
-	uint8_t i;
+	nrf_802154_security_key_remove_all();
 
-	for (i = 0; i < NRF_802154_SECURITY_KEY_STORAGE_SIZE && stored_key_ids[i].p_key_id; i++) {
-		nrf_802154_security_key_remove(&stored_key_ids[i]);
-		stored_key_ids[i].p_key_id = NULL;
-	}
-
-	i = 0;
-	for (struct ieee802154_key *keys = mac_keys; keys->key_value
-			&& i < NRF_802154_SECURITY_KEY_STORAGE_SIZE; keys++, i++) {
+	for (uint8_t i = 0; mac_keys->key_value
+			&& i < NRF_802154_SECURITY_KEY_STORAGE_SIZE; mac_keys++, i++) {
 		nrf_802154_key_t key = {
-			.value.p_cleartext_key = keys->key_value,
-			.id.mode = keys->key_id_mode,
-			.id.p_key_id = &(keys->key_index),
+			.value.p_cleartext_key = mac_keys->key_value,
+			.id.mode = mac_keys->key_id_mode,
+			.id.p_key_id = mac_keys->key_id,
 			.type = NRF_802154_KEY_CLEARTEXT,
 			.frame_counter = 0,
-			.use_global_frame_counter = !(keys->frame_counter_per_key),
+			.use_global_frame_counter = !(mac_keys->frame_counter_per_key),
 		};
 
 		__ASSERT_EVAL((void)nrf_802154_security_key_store(&key),
@@ -790,10 +799,6 @@ static void nrf5_config_mac_keys(struct ieee802154_key *mac_keys)
 			err == NRF_802154_SECURITY_ERROR_NONE ||
 			err == NRF_802154_SECURITY_ERROR_ALREADY_PRESENT,
 			"Storing key failed, err: %d", err);
-
-		stored_ids[i] = *key.id.p_key_id;
-		stored_key_ids[i].mode = key.id.mode;
-		stored_key_ids[i].p_key_id = &stored_ids[i];
 	};
 }
 #endif /* CONFIG_NRF_802154_ENCRYPTION */
@@ -925,8 +930,20 @@ static int nrf5_configure(const struct device *dev,
 
 #if defined(CONFIG_IEEE802154_CSL_ENDPOINT)
 	case IEEE802154_CONFIG_EXPECTED_RX_TIME: {
-		nrf_802154_csl_writer_anchor_time_set(nrf_802154_timestamp_phr_to_mhr_convert(
-			config->expected_rx_time / NSEC_PER_USEC));
+
+#if defined(CONFIG_NRF_802154_SER_HOST)
+		net_time_t period_ns = nrf5_data.csl_period * NSEC_PER_TEN_SYMBOLS;
+		bool changed = (config->expected_rx_time - nrf5_data.csl_rx_time) % period_ns;
+
+		nrf5_data.csl_rx_time = config->expected_rx_time;
+
+		if (changed)
+#endif /* CONFIG_NRF_802154_SER_HOST */
+		{
+			nrf_802154_csl_writer_anchor_time_set(
+				nrf_802154_timestamp_phr_to_mhr_convert(config->expected_rx_time /
+									NSEC_PER_USEC));
+		}
 	} break;
 
 	case IEEE802154_CONFIG_RX_SLOT: {
@@ -942,9 +959,12 @@ static int nrf5_configure(const struct device *dev,
 				      config->rx_slot.channel, DRX_SLOT_RX);
 	} break;
 
-	case IEEE802154_CONFIG_CSL_PERIOD:
+	case IEEE802154_CONFIG_CSL_PERIOD: {
 		nrf_802154_csl_writer_period_set(config->csl_period);
-		break;
+#if defined(CONFIG_NRF_802154_SER_HOST)
+		nrf5_data.csl_period = config->csl_period;
+#endif
+	} break;
 #endif /* CONFIG_IEEE802154_CSL_ENDPOINT */
 
 #if defined(CONFIG_IEEE802154_NRF5_MULTIPLE_CCA)
@@ -1014,13 +1034,10 @@ void nrf_802154_received_timestamp_raw(uint8_t *data, int8_t power, uint8_t lqi,
 			nrf_802154_timestamp_end_to_phr_convert(time, data[0]);
 #endif
 
-		if (data[ACK_REQUEST_BYTE] & ACK_REQUEST_BIT) {
-			nrf5_data.rx_frames[i].ack_fpb = nrf5_data.last_frame_ack_fpb;
-		} else {
-			nrf5_data.rx_frames[i].ack_fpb = false;
-		}
-
+		nrf5_data.rx_frames[i].ack_fpb = nrf5_data.last_frame_ack_fpb;
+		nrf5_data.rx_frames[i].ack_seb = nrf5_data.last_frame_ack_seb;
 		nrf5_data.last_frame_ack_fpb = false;
+		nrf5_data.last_frame_ack_seb = false;
 
 		k_fifo_put(&nrf5_data.rx_fifo, &nrf5_data.rx_frames[i]);
 
@@ -1032,7 +1049,7 @@ void nrf_802154_received_timestamp_raw(uint8_t *data, int8_t power, uint8_t lqi,
 
 void nrf_802154_receive_failed(nrf_802154_rx_error_t error, uint32_t id)
 {
-	const struct device *dev = net_if_get_device(nrf5_data.iface);
+	const struct device *dev = nrf5_get_device();
 
 #if defined(CONFIG_IEEE802154_CSL_ENDPOINT)
 	if (id == DRX_SLOT_RX) {
@@ -1080,6 +1097,8 @@ void nrf_802154_receive_failed(nrf_802154_rx_error_t error, uint32_t id)
 	}
 
 	nrf5_data.last_frame_ack_fpb = false;
+	nrf5_data.last_frame_ack_seb = false;
+
 	if (nrf5_data.event_handler) {
 		nrf5_data.event_handler(dev, IEEE802154_EVENT_RX_FAILED, (void *)&reason);
 	}
@@ -1087,8 +1106,8 @@ void nrf_802154_receive_failed(nrf_802154_rx_error_t error, uint32_t id)
 
 void nrf_802154_tx_ack_started(const uint8_t *data)
 {
-	nrf5_data.last_frame_ack_fpb =
-				data[FRAME_PENDING_BYTE] & FRAME_PENDING_BIT;
+	nrf5_data.last_frame_ack_fpb = data[FRAME_PENDING_OFFSET] & FRAME_PENDING_BIT;
+	nrf5_data.last_frame_ack_seb = data[SECURITY_ENABLED_OFFSET] & SECURITY_ENABLED_BIT;
 }
 
 void nrf_802154_transmitted_raw(uint8_t *frame,
@@ -1149,7 +1168,7 @@ void nrf_802154_energy_detected(const nrf_802154_energy_detected_t *result)
 		energy_scan_done_cb_t callback = nrf5_data.energy_scan_done;
 
 		nrf5_data.energy_scan_done = NULL;
-		callback(net_if_get_device(nrf5_data.iface), result->ed_dbm);
+		callback(nrf5_get_device(), result->ed_dbm);
 	}
 }
 
@@ -1159,7 +1178,7 @@ void nrf_802154_energy_detection_failed(nrf_802154_ed_error_t error)
 		energy_scan_done_cb_t callback = nrf5_data.energy_scan_done;
 
 		nrf5_data.energy_scan_done = NULL;
-		callback(net_if_get_device(nrf5_data.iface), SHRT_MAX);
+		callback(nrf5_get_device(), SHRT_MAX);
 	}
 }
 

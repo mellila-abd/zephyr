@@ -8,8 +8,6 @@ import re
 import textwrap
 
 from sphinx.cmd.build import get_parser
-import sphinx_rtd_theme
-
 
 args = get_parser().parse_args()
 ZEPHYR_BASE = Path(__file__).resolve().parents[1]
@@ -69,6 +67,7 @@ release = version
 
 extensions = [
     "breathe",
+    "sphinx_rtd_theme",
     "sphinx.ext.todo",
     "sphinx.ext.extlinks",
     "sphinx.ext.autodoc",
@@ -136,7 +135,6 @@ rst_epilog = """
 # -- Options for HTML output ----------------------------------------------
 
 html_theme = "sphinx_rtd_theme"
-html_theme_path = [sphinx_rtd_theme.get_html_theme_path()]
 html_theme_options = {
     "logo_only": True,
     "prev_next_buttons_location": None
@@ -167,7 +165,6 @@ html_context = {
         ("latest", "/"),
         ("3.5.0", "/3.5.0/"),
         ("3.4.0", "/3.4.0/"),
-        ("3.3.0", "/3.3.0/"),
         ("2.7.5 (LTS)", "/2.7.5/"),
     ),
     "display_gh_links": True,
@@ -185,6 +182,7 @@ latex_elements = {
     "papersize": "a4paper",
     "maketitle": open(ZEPHYR_BASE / "doc" / "_static" / "latex" / "title.tex").read(),
     "preamble": open(ZEPHYR_BASE / "doc" / "_static" / "latex" / "preamble.tex").read(),
+    "makeindex": r"\usepackage[columns=1]{idxlayout}\makeindex",
     "fontpkg": textwrap.dedent(r"""
                                     \usepackage{noto}
                                     \usepackage{inconsolata-nerd-font}

@@ -216,11 +216,17 @@ Artificially long but functional example:
         and 'fifo_loop' is a name of a function found in main.c without test prefix.
         """)
 
+    parser.add_argument(
+        "--pytest-args", action="append",
+        help="""Pass additional arguments to the pytest subprocess. This parameter
+        will override the pytest_args from the harness_config in YAML file.
+        """)
+
     valgrind_asan_group.add_argument(
         "--enable-valgrind", action="store_true",
         help="""Run binary through valgrind and check for several memory access
         errors. Valgrind needs to be installed on the host. This option only
-        works with host binaries such as those generated for the native_posix
+        works with host binaries such as those generated for the native_sim
         configuration and is mutual exclusive with --enable-asan.
         """)
 
@@ -228,7 +234,7 @@ Artificially long but functional example:
         "--enable-asan", action="store_true",
         help="""Enable address sanitizer to check for several memory access
         errors. Libasan needs to be installed on the host. This option only
-        works with host binaries such as those generated for the native_posix
+        works with host binaries such as those generated for the native_sim
         configuration and is mutual exclusive with --enable-valgrind.
         """)
 
@@ -349,7 +355,7 @@ structure in the main Zephyr tree: boards/<arch>/<board_name>/""")
         "--enable-lsan", action="store_true",
         help="""Enable leak sanitizer to check for heap memory leaks.
         Libasan needs to be installed on the host. This option only
-        works with host binaries such as those generated for the native_posix
+        works with host binaries such as those generated for the native_sim
         configuration and when --enable-asan is given.
         """)
 
@@ -358,7 +364,7 @@ structure in the main Zephyr tree: boards/<arch>/<board_name>/""")
         help="""Enable undefined behavior sanitizer to check for undefined
         behaviour during program execution. It uses an optional runtime library
         to provide better error diagnostics. This option only works with host
-        binaries such as those generated for the native_posix configuration.
+        binaries such as those generated for the native_sim configuration.
         """)
 
     parser.add_argument("--enable-size-report", action="store_true",
@@ -446,6 +452,15 @@ structure in the main Zephyr tree: boards/<arch>/<board_name>/""")
         "-n", "--no-clean", action="store_true",
         help="Re-use the outdir before building. Will result in "
              "faster compilation since builds will be incremental.")
+
+    parser.add_argument(
+        "--aggressive-no-clean", action="store_true",
+        help="Re-use the outdir before building and do not re-run cmake. Will result in "
+             "much faster compilation since builds will be incremental. This option might "
+             " result in build failures and inconsistencies if dependencies change or when "
+             " applied on a significantly changed code base. Use on your own "
+             " risk. It is recommended to only use this option for local "
+             " development and when testing localized change in a subsystem.")
 
     parser.add_argument(
         '--detailed-test-id', action='store_true',
@@ -550,12 +565,6 @@ structure in the main Zephyr tree: boards/<arch>/<board_name>/""")
                         default=True,
                         help="deprecated, left for compatibility")
 
-    parser.add_argument("--report-excluded",
-                        action="store_true",
-                        help="""List all tests that are never run based on current scope and
-            coverage. If you are looking for accurate results, run this with
-            --all, but this will take a while...""")
-
     parser.add_argument(
         "--report-name",
         help="""Create a report with a custom name.
@@ -592,7 +601,7 @@ structure in the main Zephyr tree: boards/<arch>/<board_name>/""")
 
     parser.add_argument(
         "--seed", type=int,
-        help="Seed for native posix pseudo-random number generator")
+        help="Seed for native_sim pseudo-random number generator")
 
     parser.add_argument(
         "--short-build-path",
@@ -740,6 +749,9 @@ def parse_arguments(parser, args, options = None):
 
     if options.show_footprint or options.compare_report:
         options.enable_size_report = True
+
+    if options.aggressive_no_clean:
+        options.no_clean = True
 
     if options.coverage:
         options.enable_coverage = True

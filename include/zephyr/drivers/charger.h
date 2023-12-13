@@ -4,6 +4,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+/**
+ * @file
+ * @brief Charger APIs
+ */
+
 #ifndef ZEPHYR_INCLUDE_DRIVERS_CHARGER_H_
 #define ZEPHYR_INCLUDE_DRIVERS_CHARGER_H_
 
@@ -106,7 +111,7 @@ enum charger_charge_type {
 	CHARGER_CHARGE_TYPE_UNKNOWN = 0,
 	/** Charging is not occurring */
 	CHARGER_CHARGE_TYPE_NONE,
-	/*
+	/**
 	 * Charging is occurring at the slowest desired charge rate,
 	 * typically for battery detection or preconditioning
 	 */
@@ -145,7 +150,7 @@ enum charger_health {
 	CHARGER_HEALTH_OVERHEAT,
 	/** The battery voltage has exceeded its overvoltage threshold */
 	CHARGER_HEALTH_OVERVOLTAGE,
-	/*
+	/**
 	 * The battery or charger device is experiencing an unspecified
 	 * failure.
 	 */
@@ -216,6 +221,14 @@ typedef int (*charger_set_property_t)(const struct device *dev, const charger_pr
 				      const union charger_propval *val);
 
 /**
+ * @typedef charger_charge_enable_t
+ * @brief Callback API enabling or disabling a charge cycle.
+ *
+ * See charger_charge_enable() for argument description
+ */
+typedef int (*charger_charge_enable_t)(const struct device *dev, const bool enable);
+
+/**
  * @brief Charging device API
  *
  * Caching is entirely on the onus of the client
@@ -223,6 +236,7 @@ typedef int (*charger_set_property_t)(const struct device *dev, const charger_pr
 __subsystem struct charger_driver_api {
 	charger_get_property_t get_property;
 	charger_set_property_t set_property;
+	charger_charge_enable_t charge_enable;
 };
 
 /**
@@ -265,6 +279,25 @@ static inline int z_impl_charger_set_prop(const struct device *dev, const charge
 	const struct charger_driver_api *api = (const struct charger_driver_api *)dev->api;
 
 	return api->set_property(dev, prop, val);
+}
+
+/**
+ * @brief Enable or disable a charge cycle
+ *
+ * @param dev Pointer to the battery charger device
+ * @param enable true enables a charge cycle, false disables a charge cycle
+ *
+ * @retval 0 if successful
+ * @retval -EIO if communication with the charger failed
+ * @retval -EINVAL if the conditions for initiating charging are invalid
+ */
+__syscall int charger_charge_enable(const struct device *dev, const bool enable);
+
+static inline int z_impl_charger_charge_enable(const struct device *dev, const bool enable)
+{
+	const struct charger_driver_api *api = (const struct charger_driver_api *)dev->api;
+
+	return api->charge_enable(dev, enable);
 }
 
 /**

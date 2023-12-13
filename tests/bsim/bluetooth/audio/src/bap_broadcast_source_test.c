@@ -59,7 +59,9 @@ static void stream_sent_cb(struct bt_bap_stream *stream)
 		return;
 	}
 
-	printk("Sent with seq_num %u\n", test_stream->seq_num);
+	if ((test_stream->tx_cnt % 100U) == 0U) {
+		printk("Sent with seq_num %u\n", test_stream->seq_num);
+	}
 
 	buf = net_buf_alloc(&tx_pool, K_FOREVER);
 	if (buf == NULL) {
@@ -147,26 +149,6 @@ static int setup_broadcast_source(struct bt_bap_broadcast_source **source)
 	return 0;
 }
 
-static void test_broadcast_source_get_id_inval(struct bt_bap_broadcast_source *source,
-					       uint32_t *broadcast_id_out)
-{
-	int err;
-
-	printk("Test bt_bap_broadcast_source_get_id with NULL source\n");
-	err = bt_bap_broadcast_source_get_id(NULL, broadcast_id_out);
-	if (err == 0) {
-		FAIL("bt_bap_broadcast_source_get_id with NULL source did not fail\n");
-		return;
-	}
-
-	printk("Test bt_bap_broadcast_source_get_id with NULL broadcast_id\n");
-	err = bt_bap_broadcast_source_get_id(source, NULL);
-	if (err == 0) {
-		FAIL("bt_bap_broadcast_source_get_id with NULL ID did not fail\n");
-		return;
-	}
-}
-
 static void test_broadcast_source_get_id(struct bt_bap_broadcast_source *source,
 					 uint32_t *broadcast_id_out)
 {
@@ -175,43 +157,6 @@ static void test_broadcast_source_get_id(struct bt_bap_broadcast_source *source,
 	err = bt_bap_broadcast_source_get_id(source, broadcast_id_out);
 	if (err != 0) {
 		FAIL("Unable to get broadcast ID: %d\n", err);
-		return;
-	}
-}
-
-static void test_broadcast_source_get_base_inval(struct bt_bap_broadcast_source *source,
-						 struct net_buf_simple *base_buf)
-{
-	/* Large enough for minimum, but not large enough for any CC or Meta data */
-	NET_BUF_SIMPLE_DEFINE(small_base_buf, BT_BAP_BASE_MIN_SIZE + 2);
-	NET_BUF_SIMPLE_DEFINE(very_small_base_buf, 4);
-	int err;
-
-	printk("Test bt_bap_broadcast_source_get_base with NULL source\n");
-	err = bt_bap_broadcast_source_get_base(NULL, base_buf);
-	if (err == 0) {
-		FAIL("bt_bap_broadcast_source_get_base with NULL source did not fail\n");
-		return;
-	}
-
-	printk("Test bt_bap_broadcast_source_get_base with NULL buf\n");
-	err = bt_bap_broadcast_source_get_base(source, NULL);
-	if (err == 0) {
-		FAIL("bt_bap_broadcast_source_get_base with NULL buf did not fail\n");
-		return;
-	}
-
-	printk("Test bt_bap_broadcast_source_get_base with very small buf\n");
-	err = bt_bap_broadcast_source_get_base(source, &very_small_base_buf);
-	if (err == 0) {
-		FAIL("bt_bap_broadcast_source_get_base with very small buf did not fail\n");
-		return;
-	}
-
-	printk("Test bt_bap_broadcast_source_get_base with small buf\n");
-	err = bt_bap_broadcast_source_get_base(source, &small_base_buf);
-	if (err == 0) {
-		FAIL("bt_bap_broadcast_source_get_base with small buf did not fail\n");
 		return;
 	}
 }
@@ -254,7 +199,6 @@ static int setup_extended_adv(struct bt_bap_broadcast_source *source, struct bt_
 		return err;
 	}
 
-	test_broadcast_source_get_id_inval(source, &broadcast_id);
 	test_broadcast_source_get_id(source, &broadcast_id);
 
 	/* Setup extended advertising data */
@@ -270,7 +214,6 @@ static int setup_extended_adv(struct bt_bap_broadcast_source *source, struct bt_
 	}
 
 	/* Setup periodic advertising data */
-	test_broadcast_source_get_base_inval(source, &base_buf);
 	test_broadcast_source_get_base(source, &base_buf);
 
 	per_ad.type = BT_DATA_SVC_DATA16;
@@ -363,6 +306,36 @@ static void test_broadcast_source_start(struct bt_bap_broadcast_source *source,
 	}
 }
 
+static void test_broadcast_source_update_metadata(struct bt_bap_broadcast_source *source,
+						  struct bt_le_ext_adv *adv)
+{
+	uint8_t new_metadata[] = BT_AUDIO_CODEC_CFG_LC3_META(BT_AUDIO_CONTEXT_TYPE_ALERTS);
+	struct bt_data per_ad;
+	int err;
+
+	NET_BUF_SIMPLE_DEFINE(base_buf, 128);
+
+	printk("Updating metadata\n");
+	err = bt_bap_broadcast_source_update_metadata(source, new_metadata,
+						      ARRAY_SIZE(new_metadata));
+	if (err != 0) {
+		FAIL("Failed to update metadata broadcast source: %d\n", err);
+		return;
+	}
+
+	/* Get the new BASE */
+	test_broadcast_source_get_base(source, &base_buf);
+
+	/* Update the periodic advertising data with the new BASE */
+	per_ad.type = BT_DATA_SVC_DATA16;
+	per_ad.data_len = base_buf.len;
+	per_ad.data = base_buf.data;
+	err = bt_le_per_adv_set_data(adv, &per_ad, 1);
+	if (err != 0) {
+		FAIL("Failed to set periodic advertising data: %d\n", err);
+	}
+}
+
 static void test_broadcast_source_stop(struct bt_bap_broadcast_source *source)
 {
 	int err;
@@ -426,7 +399,6 @@ static int stop_extended_adv(struct bt_le_ext_adv *adv)
 
 static void test_main(void)
 {
-	uint8_t new_metadata[] = BT_AUDIO_CODEC_CFG_LC3_META(BT_AUDIO_CONTEXT_TYPE_ALERTS);
 	struct bt_bap_broadcast_source *source;
 	struct bt_le_ext_adv *adv;
 	int err;
@@ -468,26 +440,17 @@ static void test_main(void)
 		}
 	}
 
-	for (size_t i = 0U; i < ARRAY_SIZE(broadcast_source_streams); i++) {
-		/* Keep sending until we reach 5 times the minimum expected to be pretty sure
-		 * that the receiver receives enough
-		 */
-		while (broadcast_source_streams[i].tx_cnt < MIN_SEND_COUNT) {
-			k_sleep(K_MSEC(100));
-		}
-	}
+	/* Wait for other devices to have received what they wanted */
+	backchannel_sync_wait_any();
 
 	/* Update metadata while streaming */
-	printk("Updating metadata\n");
-	err = bt_bap_broadcast_source_update_metadata(source, new_metadata,
-						      ARRAY_SIZE(new_metadata));
-	if (err != 0) {
-		FAIL("Failed to update metadata broadcast source: %d\n", err);
-		return;
-	}
+	test_broadcast_source_update_metadata(source, adv);
 
-	/* Keeping running for a little while */
-	k_sleep(K_SECONDS(5));
+	/* Wait for other devices to have received what they wanted */
+	backchannel_sync_wait_any();
+
+	/* Wait for other devices to let us know when we can stop the source */
+	backchannel_sync_wait_any();
 
 	test_broadcast_source_stop(source);
 

@@ -19,7 +19,7 @@ LOG_MODULE_REGISTER(net_sock_tls, CONFIG_NET_SOCKETS_LOG_LEVEL);
 #include <zephyr/sys/util.h>
 #include <zephyr/net/socket.h>
 #include <zephyr/random/random.h>
-#include <zephyr/syscall_handler.h>
+#include <zephyr/internal/syscall_handler.h>
 #include <zephyr/sys/fdtable.h>
 
 /* TODO: Remove all direct access to private fields.
@@ -2230,10 +2230,9 @@ static ssize_t send_tls(struct tls_context *ctx, const void *buf,
 			timeout_ms = timeout_to_ms(&timeout);
 			ret = wait_for_reason(ctx->sock, timeout_ms, ret);
 			if (ret != 0) {
-				/* Retry. */
+				errno = -ret;
 				break;
 			}
-
 		} else {
 			(void)tls_mbedtls_reset(ctx);
 			errno = EIO;
